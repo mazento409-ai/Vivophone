@@ -3,7 +3,10 @@ package com.example.vivophone
 import android.Manifest
 import android.app.role.RoleManager
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.CallLog
 import android.telecom.PhoneAccountHandle
@@ -62,36 +65,65 @@ private val perms = arrayOf(
 
 fun placeCall(ctx: Context, number: String, account: PhoneAccountHandle? = null) {
     if (number.isBlank()) return
-    val tm = ctx.getSystemService(TelecomManager::class.java)
-    val extras = Bundle().apply {
-        if (account != null) putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, account)
-    }
     try {
+        val tm = ctx.getSystemService(TelecomManager::class.java)
+        val extras = Bundle().apply {
+            if (account != null) putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, account)
+        }
         tm.placeCall(Uri.fromParts("tel", number, null), extras)
-    } catch (_: SecurityException) {
+    } catch (_: Exception) {
     }
 }
 
 @Composable
 fun App(initialNumber: String) {
     val ctx = LocalContext.current
-    var granted by remember { mutableStateOf(perms.all { ctx.checkSelfPermission(it) == 0 }) }
 
-    val permLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { r ->
-        granted = r.filterKeys { it != Manifest.permission.POST_NOTIFICATIONS }.values.all { it }
+    val needed = remember {
+        perms.filter {
+            (it != Manifest.permission.POST_NOTIFICATIONS || Build.VERSION.SDK_INT >= 33) &&
+                (it != Manifest.permission.ANSWER_PHONE_CALLS || Build.VERSION.SDK_INT >= 26)
+        }
     }
+    var granted by remember {
+        mutableStateOf(needed.all { ctx.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED })
+    }
+
     val roleLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { }
 
-    LaunchedEffect(Unit) {
-        if (!granted) permLauncher.launch(perms)
-        val rm = ctx.getSystemService(RoleManager::class.java)
-        if (rm.isRoleAvailable(RoleManager.ROLE_DIALER) && !rm.isRoleHeld(RoleManager.ROLE_DIALER)) {
-            roleLauncher.launch(rm.createRequestRoleIntent(RoleManager.ROLE_DIALER))
+    fun askRole() {
+        try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                val rm = ctx.getSystemService(RoleManager::class.java)
+                if (rm.isRoleAvailable(RoleManager.ROLE_DIALER) && !rm.isRoleHeld(RoleManager.ROLE_DIALER)) {
+                    roleLauncher.launch(rm.createRequestRoleIntent(RoleManager.ROLE_DIALER))
+                }
+            } else {
+                val tm = ctx.getSystemService(TelecomManager::class.java)
+                if (tm.defaultDialerPackage != ctx.packageName) {
+                    roleLauncher.launch(
+                        Intent(TelecomManager.ACTION_CHANGE_DEFAULT_DIALER)
+                            .putExtra(TelecomManager.EXTRA_CHANGE_DEFAULT_DIALER_PACKAGE_NAME, ctx.packageName)
+                    )
+                }
+            }
+        } catch (_: Exception) {
         }
+    }
+
+    val permLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { r ->
+        granted = needed
+            .filter { it != Manifest.permission.POST_NOTIFICATIONS }
+            .all { r[it] == true }
+        askRole()
+    }
+
+    LaunchedEffect(Unit) {
+        if (!granted) permLauncher.launch(needed.toTypedArray()) else askRole()
     }
 
     var tab by remember { mutableIntStateOf(if (initialNumber.isNotEmpty()) 2 else 0) }
@@ -106,7 +138,14 @@ fun App(initialNumber: String) {
     }) { pad ->
         Box(Modifier.padding(pad).fillMaxSize()) {
             if (!granted) {
-                Text("Permissions required", Modifier.align(Alignment.Center))
+                Column(
+                    Modifier.align(Alignment.Center).padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("Permissions required", fontSize = 18.sp)
+                    Spacer(Modifier.height(12.dp))
+                    Button({ permLauncher.launch(needed.toTypedArray()) }) { Text("Grant permissions") }
+                }
             } else when (tab) {
                 0 -> RecentsScreen { dialNumber = it; tab = 2 }
                 1 -> ContactsScreen { dialNumber = it; tab = 2 }
@@ -120,7 +159,9 @@ fun App(initialNumber: String) {
 fun RecentsScreen(onPick: (String) -> Unit) {
     val ctx = LocalContext.current
     val log by produceState(emptyList<CallEntry>()) {
-        value = withContext(Dispatchers.IO) { Repos.callLog(ctx) }
+        value = withContext(Dispatchers.IO) {
+            try { Repos.callLog(ctx) } catch (_: Exception) { emptyList() }
+        }
     }
     LazyColumn(Modifier.fillMaxSize()) {
         item { Text("Recents", fontSize = 32.sp, modifier = Modifier.padding(20.dp)) }
@@ -142,7 +183,7 @@ fun RecentsScreen(onPick: (String) -> Unit) {
                 Spacer(Modifier.width(16.dp))
                 Column(Modifier.weight(1f)) {
                     Text(
-                        e.name ?: e.number,
+                        if (e.name.isNullOrBlank()) e.number else e.name,
                         color = if (missed) Color.Red else MaterialTheme.colorScheme.onSurface
                     )
                     Text(
@@ -160,7 +201,9 @@ fun RecentsScreen(onPick: (String) -> Unit) {
 fun ContactsScreen(onPick: (String) -> Unit) {
     val ctx = LocalContext.current
     val all by produceState(emptyList<ContactItem>()) {
-        value = withContext(Dispatchers.IO) { Repos.contacts(ctx) }
+        value = withContext(Dispatchers.IO) {
+            try { Repos.contacts(ctx) } catch (_: Exception) { emptyList() }
+        }
     }
     var q by remember { mutableStateOf("") }
     val list = all.filter { q.isBlank() || it.name.contains(q, true) || it.number.contains(q) }
@@ -201,7 +244,7 @@ fun DialerScreen(number: String, onChange: (String) -> Unit) {
     val accounts = remember {
         try {
             ctx.getSystemService(TelecomManager::class.java).callCapablePhoneAccounts
-        } catch (_: SecurityException) {
+        } catch (_: Exception) {
             emptyList<PhoneAccountHandle>()
         }
     }
@@ -248,4 +291,3 @@ fun DialerScreen(number: String, onChange: (String) -> Unit) {
         Spacer(Modifier.height(16.dp))
     }
 }
-import android.content.Intent
