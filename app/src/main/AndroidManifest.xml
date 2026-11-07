@@ -10,6 +10,7 @@
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>
 
     <application
+        android:icon="@drawable/ic_launcher"
         android:label="Vivo Phone"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
