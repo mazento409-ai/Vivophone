@@ -4,6 +4,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
+import android.os.Build
 import android.telecom.Call
 import android.telecom.InCallService
 import androidx.core.app.NotificationCompat
@@ -26,9 +27,11 @@ class PhoneInCallService : InCallService() {
 
     private fun showRingingNotification(intent: Intent) {
         val nm = getSystemService(NotificationManager::class.java)
-        nm.createNotificationChannel(
-            NotificationChannel("incoming", "Incoming calls", NotificationManager.IMPORTANCE_HIGH)
-        )
+        if (Build.VERSION.SDK_INT >= 26) {
+            nm.createNotificationChannel(
+                NotificationChannel("incoming", "Incoming calls", NotificationManager.IMPORTANCE_HIGH)
+            )
+        }
         val pi = PendingIntent.getActivity(
             this, 0, intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
